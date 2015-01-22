@@ -19,25 +19,18 @@ app.get('/search', function(req, res) {
             },
             sort: [ '_score:desc', 'time:desc'],
             body: {
-                query: {
-                    dis_max: {
-                        queries: [
+                query: { dis_max: { queries: [
                             {
-                                match: {
-                                    name: {
+                                match: { name: {
                                         query: keyword,
                                         boost: 2
-                                    }
-                                }
+                                } }
                             },
                             {
-                                match: {
-                                    desc: keyword
-                                }
+                                match: { desc: keyword }
                             }
-                        ]
-                    }
-                }
+                    ]
+                } }
             }
         })
         .then(function(results) {

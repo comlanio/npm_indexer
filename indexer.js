@@ -1,9 +1,42 @@
 #!/usr/bin/env node
 var Promise = require('bluebird'),
-    couchdb = require('./lib/couchdb').client,
-    argv = require('minimist')(process.argv.slice(2)),
-    elasticsearch = require('elasticsearch').Client(),
-    log = require('logging').from(__filename);
+    minimist = require('minimist'),
+    log = require('logging').from(__filename),
+    elasticsearch = require('elasticsearch'),
+    couchdb = require('./lib/couchdb'),
+    cdb,
+    es;
+
+function getCouchConfig(argv) {
+    var couchConfig = {};
+    couchConfig.host = argv.couchdb ? argv.couchdb.split(':')[0] : 'skimdb.npmjs.com';
+    couchConfig.port = argv.couchdb && argv.couchdb.indexOf(':') > -1 ? argv.couchdb.split(':')[1].split('/')[0] : 443;
+    couchConfig.db = argv.couchdb && argv.couchdb.indexOf('/') > -1 ? argv.couchdb.split('/')[1] : 'registry';
+    return couchConfig;
+}
+
+function main(argv) {
+    log(argv);
+    cdb = couchdb.client(getCouchConfig(argv));
+
+    es = elasticsearch.Client({
+        host: argv.es || 'localhost:9200',
+        sniffInterval: 60000,
+        suggestCompression: true
+    });
+
+    es.transport.sniff(function() {
+        if (argv.init) {
+            initializeCache()
+                .then(function() {
+                    delete argv.init;
+                    main(argv);
+                });
+        } else {
+            updateCache(argv.freq*1000 || 5000);
+        }
+    });
+}
 
 function addDocumentToCache(document) {
     if (document.name) {
@@ -22,7 +55,7 @@ function addDocumentToCache(document) {
         if (document.time && document.time.modified) {
             pkg.time = document.time.modified
         }
-        return elasticsearch.index({
+        return es.index({
             index: 'packages',
             type: 'package',
             id: document.name,
@@ -34,40 +67,40 @@ function addDocumentToCache(document) {
 
 function getDocumentsSlice(start, size) {
     log('Getting ' + size + ' document(s) from ' + start);
-    return couchdb.all({limit: size, skip: start, include_docs: true})
+    return cdb.all({limit: size, skip: start, include_docs: true})
         .map(function (document) {
             addDocumentToCache(document.doc);
         });
 }
 
 function clearIndex() {
-    return elasticsearch.indices.exists({ index: 'packages' })
+    return es.indices.exists({ index: 'packages' })
         .then(function(exists) {
             if (exists) {
-                return elasticsearch.indices.delete({ index: 'packages' });
+                return es.indices.delete({ index: 'packages' });
             }
             return Promise.resolve();
         })
         .then(function() {
-            return elasticsearch.indices.exists({ index: 'info' })
+            return es.indices.exists({ index: 'info' })
                 .then(function(exists) {
                     if (exists) {
-                        return elasticsearch.indices.delete({ index: 'info' });
+                        return es.indices.delete({ index: 'info' });
                     }
                     return Promise.resolve();
                 })
         })
         .then(function() {
-            return elasticsearch.indices.create({ index: 'packages' })
+            return es.indices.create({ index: 'packages' })
         })
         .then(function() {
-            return elasticsearch.indices.create({ index: 'info' })
+            return es.indices.create({ index: 'info' })
         });
 }
 
 function initializeCache() {
     log('Initializing cache...');
-    couchdb.info()
+    return cdb.info()
         .then(function(info) {
             log('Update seq: ', info.update_seq);
             log('Documents count: ', info.doc_count);
@@ -85,7 +118,7 @@ function initializeCache() {
                     return getDocumentsSlice(start, sliceSize);
                 }, {concurrency: 1})
                 .then(function() {
-                    return elasticsearch.index({
+                    return es.index({
                         index: 'info',
                         type: 'seq',
                         id: 'update_seq',
@@ -95,8 +128,8 @@ function initializeCache() {
         });
 }
 
-function updateCache() {
-    elasticsearch.get({
+function updateCache(freq) {
+    es.get({
             index: 'info',
             type: 'seq',
             fields: [ 'value' ],
@@ -107,7 +140,7 @@ function updateCache() {
                 return Promise.reject('Uninitialized index, use --init to initialize');
             }
             var last_seq = seq.fields.value;
-            return couchdb.changes({since: last_seq, include_docs: true})
+            return cdb.changes({since: last_seq, include_docs: true})
                 .then(function(documents) {
                     var documentsCount = documents.length;
                     log(documentsCount + ' document(s) changed since seq ' + seq.fields.value);
@@ -117,7 +150,7 @@ function updateCache() {
                         last_seq = Math.max(last_seq, document.seq);
                     }
                     log('Waiting for next changes...');
-                    return elasticsearch.index({
+                    return es.index({
                         index: 'info',
                         type: 'seq',
                         id: 'update_seq',
@@ -125,16 +158,13 @@ function updateCache() {
                     });
                 });
         })
-        .delay(5000)
-        .then(updateCache)
+        .delay(freq)
+        .then(function() {
+            updateCache(freq);
+        })
         .catch(function(err) {
             log(err);
         });
 }
 
-if (argv.init) {
-    initializeCache();
-} else {
-    updateCache();
-}
-
+main(minimist(process.argv.slice(2)));
