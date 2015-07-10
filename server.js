@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 var Promise = require('bluebird'),
+    log = require('logging').from(__filename),
+    argv = require('minimist')(process.argv.slice(2)),
     elasticsearch = require('elasticsearch').Client(),
     express = require('express');
 
 var app = express();
 
 app.get('/search', function(req, res) {
+    var startTime = new Date().getTime();
     var keyword = req.query.q;
     if (keyword.join) {
         keyword = keyword.join(' ');
@@ -48,7 +51,11 @@ app.get('/search', function(req, res) {
                 }
                 return pkg;
             }));
+            var elapsed = new Date().getTime() - startTime;
+            log('Search for keywords : \"' + keyword + '\" served in ' + elapsed + ' ms');
         });
 });
 
-app.listen(3000);
+app.listen(argv.p || 3000, function() {
+    log('Server listening on port ' + (argv.p || 3000));
+});
